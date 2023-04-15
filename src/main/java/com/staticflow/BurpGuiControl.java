@@ -1,24 +1,24 @@
 package main.java.com.staticflow;
 
 import javax.swing.*;
-import javax.swing.event.TreeModelListener;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
 import javax.swing.tree.MutableTreeNode;
 import java.awt.*;
+import java.awt.event.ActionListener;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.Enumeration;
+import java.util.*;
 import java.util.List;
-import java.util.Optional;
 
 /**
 This Library provides a set of tools for easily manipulating the Swing Components that comprise Burp Suite's UI.
  */
 public final class BurpGuiControl {
+
+    static final Frame SETTINGS_JFRAME = getSettingsFrame();
 
     /**
      * This method returns a Component at a specified walk from a starting Component.
@@ -158,45 +158,16 @@ public final class BurpGuiControl {
     }
 
     /**
-     * Internally called by {@link BurpGuiControl#addMenuToSettingsTree} to initialize the top level menu for holding user defined menu options.
-     * It checks for the existence of a custom JTree model listener {@link SettingsTreeChangeListener} and if it does not exists, creates it.
-     * @param model The {@link DefaultTreeModel Model} used internally within Burp Suite to represent the Settings menus
-     * @param name The node name for the user defined menu component
-     * @param settingsTreeComponent The user defined {@link Component} that will be injected into the Burp Suite settings tree
-     * @return The top level custom DefaultMutableTreeNode where extensions custom settings nodes are placed
-     */
-    private static DefaultMutableTreeNode initializeCustomSettingsTree(DefaultTreeModel model, String name, Component settingsTreeComponent) {
-        // Loop through the listeners attached to the Burp Suite Settings Tree Model
-        for(TreeModelListener listener : model.getTreeModelListeners()) {
-            //Find our custom one
-            if(listener.getClass().getName().equals(SettingsTreeChangeListener.class.getName())) {
-                //If it exists, return
-                System.out.println("Settings Tree Listener already exists, returning.");
-                return (DefaultMutableTreeNode) model.getChild(model.getRoot(),model.getChildCount(model.getRoot())-1);
-            }
-        }
-        //If it does not exist, create it, then attach it to the JTree model
-        System.out.println("Settings Tree Listener does not exist, creating.");
-        SettingsTreeChangeListener settingsTreeChangeListener = new SettingsTreeChangeListener(model,name,settingsTreeComponent);
-        model.addTreeModelListener(settingsTreeChangeListener);
-        DefaultMutableTreeNode rootNode = (DefaultMutableTreeNode) model.getRoot();
-        DefaultMutableTreeNode baseCustomSettingsNode = new DefaultMutableTreeNode("Custom Extension Settings");
-        rootNode.insert(baseCustomSettingsNode,rootNode.getChildCount());
-        return baseCustomSettingsNode;
-    }
-
-    /**
      * Called by Extensions, typically when being removed or on Burp Suite close, to remove any custom settings menus. If this is not called, the custom menu
      * will persist after the extension is gone.
      * @param name The name of the menu to remove.
      */
     public static void removeCustomSettingsTree(String name) {
         System.out.println("Removing: "+name);
-        //Retrieve the top level frame
-        Frame treeFrame = getSettingsFrame();
         //Get the JTree reference from it
-        JTree tree = (JTree) findFirstComponentOfType(treeFrame,JTree.class);
+        JTree tree = (JTree) findFirstComponentOfType(SETTINGS_JFRAME,JTree.class);
         //Get the model from the JTree
+        assert tree != null;
         DefaultTreeModel treeModel = (DefaultTreeModel) tree.getModel();
         //Get the root JTree node
         DefaultMutableTreeNode rootNode = (DefaultMutableTreeNode) treeModel.getRoot();
@@ -216,10 +187,11 @@ public final class BurpGuiControl {
         if(rootNode.getChildAt(rootNode.getChildCount() - 1).getChildCount() == 0) {
             System.out.println("No more custom nodes exists, removing root custom node.");
             treeModel.removeNodeFromParent((MutableTreeNode) rootNode.getChildAt(rootNode.getChildCount() - 1));
-            for(TreeModelListener listener : treeModel.getTreeModelListeners()) {
-                if(listener instanceof SettingsTreeChangeListener) {
-                    treeModel.removeTreeModelListener(listener);
-                    return;
+            JToggleButton allToggle = (JToggleButton) findFirstComponentOfType(SETTINGS_JFRAME,JToggleButton.class);
+            assert allToggle != null;
+            for(ActionListener listener : allToggle.getActionListeners()) {
+                if(AllToggleActionListener.class.getName().equals(listener.getClass().getName())) {
+                    allToggle.removeActionListener(listener);
                 }
             }
         }
@@ -229,88 +201,128 @@ public final class BurpGuiControl {
     /**
      * Here there be dragons! Burp Suite does not provide a means of accessing the Settings Tree to add custom options. This library achieves this by using
      * reflection to access the classes controlling the Settings menu and injecting the user supplied menu component. At a high level the process goes like this:
-     *      1. Get a reference to the JTree and its DefaultTreeModel
-     *      2. Install a custom TreeModelChangeListener to capture updates to the Tree (For why, see {@link SettingsTreeChangeListener}
-     *      3. Get a reference to the root node and its child
-     *      4. Create a new instance of the Burp Suite internal class representing a Menu Tree Node
-     *      5. Call an internal method of the Class from step 4 to generate the default Component shown when clicking on the Menu Node
-     *      6. Cast the internal Burp Suite class returned from the step 5 method call to JPanel and add the users custom Component to it
-     *      7. Get a reference to the global JPanel which holds a reference to all possible Settings panels, and add the users custom Component to it
-     *      8. Create a new DefaultMutableTreeNode, and set the Object from step 4 as it's UserObject
-     *      9. Add the new Tree Node from step 8 to the new "Custom Extension Settings" Tree Node
-     *      10. Add the "Custom Extension Settings" Tree Node to the Root Node and reload the model
+     *      1. Get a reference to the top level Settings JFrame using {@link BurpGuiControl#getSettingsFrame()}
+     *      2. Call {@link BurpGuiControl#initializeCustomSettingsMenu} to set up the custom menu for the first time
+     *      3. Get a reference to the "All" filter button in the settings menu
+     *      4. add a custom ActionListener {@link AllToggleActionListener} to the filter button that recreates the custom extension settings menus when clicked
      * @param name The name for the custom setting node
      * @param settingsTree The {@link Component} to be shown when clicking on the custom setting node
-     * @throws ClassNotFoundException Thrown if the internal Burp Suite Class cannot be found
-     * @throws NoSuchMethodException Thrown if the required constructor is not found on the internal Burp Suite Class
-     * @throws InvocationTargetException Thrown if the internal Burp Suite Class constructor throws an exception
-     * @throws InstantiationException Thrown if the internal Burp Suite Class cannot be instantiated
-     * @throws IllegalAccessException Thrown if the internal Burp Suite Class cannot be accessed
      */
-    public static void addMenuToSettingsTree(String name, Component settingsTree) throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
-        //Retrieve the top level Settings JFrame
-        Frame treeFrame = getSettingsFrame();
-        //Retrieve the JTree component from the JFrame
-        assert treeFrame != null;
-        JTree tree = (JTree) findFirstComponentOfType(treeFrame,JTree.class);
-        //Retrieve the Model from the JTree
+    public static void addMenuToSettingsTree(String name, Component settingsTree) {
+        initializeCustomSettingsMenu(name,settingsTree);
+        JToggleButton allToggle = (JToggleButton) findFirstComponentOfType(SETTINGS_JFRAME,JToggleButton.class);
+        assert allToggle != null;
+        allToggle.addActionListener(new AllToggleActionListener(name,settingsTree));
+    }
+
+
+    /**
+     *      1. Get a reference to the JTree and its DefaultTreeModel
+     *      2. Check if the last child in the tree is a "Custom Extension Settings" node
+     *      3. Get a reference to the root node and its last child
+     *      4. If the last child is not "Custom Extension Settings" add the top level node and call {@link BurpGuiControl#createNewExtensionSettingsNode}
+     *      5. If the last child is "Custom Extension Settings" call {@link BurpGuiControl#createNewExtensionSettingsNode}
+     *      6. Insert the new node from step 4/5 into the tree and update the model
+     * @param name The name for the custom setting node
+     * @param settingsTree The {@link Component} to be shown when clicking on the custom setting node
+     */
+    static void initializeCustomSettingsMenu(String name, Component settingsTree) {
+        System.out.println(name);
+        JTree tree = (JTree) findFirstComponentOfType(SETTINGS_JFRAME,JTree.class);
         assert tree != null;
+        //Retrieve the Model from the JTree
         DefaultTreeModel treeModel = (DefaultTreeModel) tree.getModel();
-        //Check if the top level "Custom Extension Settings" node needs to be created
-        DefaultMutableTreeNode baseCustomSettingsNode = initializeCustomSettingsTree(treeModel,name,settingsTree);
-        //Retrieve the root JTree node
-        DefaultMutableTreeNode rootNode = (DefaultMutableTreeNode) treeModel.getRoot();
-        //Retrieve the first child of the root JTree node
-        DefaultMutableTreeNode toolsMenuNode = (DefaultMutableTreeNode) ((DefaultMutableTreeNode) treeModel.getRoot()).getChildAt(0);
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) treeModel.getRoot();
+        DefaultMutableTreeNode lastChild = (DefaultMutableTreeNode) treeModel.getChild(root, treeModel.getChildCount(root)-1);
+        try {
+            if (!lastChild.toString().equals("Custom Extension Settings")) {
+                System.out.println("Top level custom extension settings node does not exist, creating it");
+                DefaultMutableTreeNode baseCustomSettingsNode = new DefaultMutableTreeNode("Custom Extension Settings");
+                root.insert(baseCustomSettingsNode, root.getChildCount());
+                DefaultMutableTreeNode newNode =  createNewExtensionSettingsNode((DefaultMutableTreeNode) treeModel.getChild(root, 0),name,settingsTree);
+                //Add our new entry to the top level custom settings Menu Node
+                baseCustomSettingsNode.insert(newNode, 0);
+                //Notify the model the new nodes were added
+                treeModel.nodesWereInserted(root, new int[]{root.getIndex(baseCustomSettingsNode)});
+                //reload the model
+                treeModel.reload();
+            } else {
+                System.out.println("Top level custom extension settings node exists, adding to it");
+                DefaultMutableTreeNode newNode =  createNewExtensionSettingsNode((DefaultMutableTreeNode) treeModel.getChild(root, 0),name,settingsTree);
+                //Add our new entry to the top level custom settings Menu Node
+                lastChild.insert(newNode, 0);
+                //Notify the model the new nodes were added
+                treeModel.nodesWereInserted(root, new int[]{root.getIndex(lastChild)});
+                //reload the model
+                treeModel.reload();
+            }
+        } catch (Exception ex) {
+            System.out.println("Could not add custom extension settings panel: "+ex);
+        }
+    }
+
+    /**
+     * This class is called by {@link BurpGuiControl#initializeCustomSettingsMenu} to create a new settings node for an Extension's setting panel. an overview
+     * of how it works is below:<Br>
+     *      1. Create a new instance of the Burp Suite internal class representing a Menu Tree Node
+     *      2. Call the constructor of the Class from step 1 to generate the default Component shown when clicking on the Menu Node
+     *      3. Cast the internal Burp Suite class returned from the step 2 method call to JPanel and add the users custom Component to it
+     *      4. Call {@link BurpGuiControl#injectCustomPanelIntoGlobalList} to add the JPanel from step 3 to the global list of settings panels
+     *      5. Create a new DefaultMutableTreeNode, and set the Object from step 2 as it's UserObject and return
+     * @param childToClone reference to the internal BurpSuite class representing a top level settings node
+     * @param newNodeName the user supplied name for the custom settings component
+     * @param newNodeComponent the user supplied panel containing settings components
+     * @return New {@link DefaultMutableTreeNode} containing the custom extension settings panel
+     * @throws ClassNotFoundException Thrown if the BurpSuite class representing a Settings node cannot be found
+     * @throws NoSuchMethodException Thrown if a method on the BurpSuite class representing a Settings node cannot be found
+     * @throws InvocationTargetException Thrown if a new instance of the BurpSuite class representing a Settings node cannot be created
+     * @throws InstantiationException Thrown if a new instance of the BurpSuite class representing a Settings node cannot be created
+     * @throws IllegalAccessException Thrown if a new instance of the BurpSuite class representing a Settings node cannot be created
+     */
+    private static DefaultMutableTreeNode createNewExtensionSettingsNode(DefaultMutableTreeNode childToClone, String newNodeName, Component newNodeComponent ) throws ClassNotFoundException, NoSuchMethodException, InvocationTargetException, InstantiationException, IllegalAccessException {
         //Retrieve the Class name of the internal Burp Suite Class that represents Settings Menu Nodes
-        String toolsMenuNodeUserObjectClassName  = toolsMenuNode.getUserObject().getClass().getName();
+        String toolsMenuNodeUserObjectClassName = childToClone.getUserObject().getClass().getName();
         //Load the Class using Burp Suite's ClassLoader
-        Class<?> clazz = toolsMenuNode.getUserObject().getClass().getClassLoader().loadClass(toolsMenuNodeUserObjectClassName);
+        Class<?> clazz = childToClone.getUserObject().getClass().getClassLoader().loadClass(toolsMenuNodeUserObjectClassName);
         //Retrieve the parameterized constructor which takes the name of the Menu Node as a parameter
         Constructor<?> clazzConstructor = clazz.getDeclaredConstructor(String.class);
         //Make the constructor publicly accessible
         clazzConstructor.setAccessible(true);
         //Instantiate a new Menu Node Object using the user supplied name
-        Object customSettings = clazzConstructor.newInstance(name);
+        Object customSettings = clazzConstructor.newInstance(newNodeName);
 
-        //Reference to the internal Burp Suite object which represents the Componet rendered when a Menu Node is clicked
+        //Reference to the internal Burp Suite object which represents the Component rendered when a Menu Node is clicked
         Object panelResultClass = null;
         //Loop over all methods within the internal Burp Suite Class that represents Settings Menu Nodes
-        for(Method method : customSettings.getClass().getDeclaredMethods()) {
+        for (Method method : customSettings.getClass().getDeclaredMethods()) {
             /*
                 If the method takes one parameter and that parameter is an internal Burp Suite class, it is likely to be the method we need.
                 This is leaky but really the only way to do it. You can't call it by name because the obfuscation on the Burp Suite class files will
                 continue to change. This is the only method on this class which has both 1 parameter and that parameter is a Burp Suite internal class so it works.
              */
-            if(method.getParameterCount() == 1 && method.getParameterTypes()[0].getName().startsWith("burp")) {
+            if (method.getParameterCount() == 1 && method.getParameterTypes()[0].getName().startsWith("burp")) {
                 //make it publicly accessible
                 method.setAccessible(true);
                 //invoke the method and receive the Object representing the default blank Component which is shown when clicking on a Menu Node
-                Optional panelResultClassOptional = (Optional) method.invoke(customSettings,new Object[]{ null });
+                Optional panelResultClassOptional = (Optional) method.invoke(customSettings, new Object[]{null});
                 //Retrieve the Object from the Optional result
                 panelResultClass = panelResultClassOptional.get();
                 //Cast the internal Burp Suite Class to a JPanel, which it extends, and add the users custom Component to it.
-                ((JPanel) panelResultClass).add(settingsTree);
+                ((JPanel) panelResultClass).add(newNodeComponent);
                 //Force update the Components UI
                 ((JPanel) panelResultClass).updateUI();
             }
         }
-        //Create the new Node containing the custom content
-        DefaultMutableTreeNode newNode = new DefaultMutableTreeNode(customSettings);
 
         //Inject our new setting Component into the global list
-        injectCustomPanelIntoGlobalList(treeFrame, (JPanel) panelResultClass);
+        injectCustomPanelIntoGlobalList(SETTINGS_JFRAME, (JPanel) panelResultClass);
 
-        //Add our new entry to the top level custom settings Menu Node
-        baseCustomSettingsNode.insert(newNode,0);
-        //Notify the model the new nodes were added
-        treeModel.nodesWereInserted(rootNode, new int[]{rootNode.getIndex(baseCustomSettingsNode)});
-        //reload the model
-        treeModel.reload();
+        //Create the new Node containing the custom content
+        return new DefaultMutableTreeNode(customSettings);
     }
 
     /**
-     * Called by {@link BurpGuiControl#addMenuToSettingsTree} to inject the custom extension setting Component into the global list. Internally Burp Suite uses
+     * Called by {@link BurpGuiControl#initializeCustomSettingsMenu} to inject the custom extension setting Component into the global list. Internally Burp Suite uses
      * a single JPanel which holds all possible settings Components and switches which one is visible based on which Menu Node the user clicks. I do not know
      * why they did it that way. Regardless, You have to add any custom settings components to the Jtree Model AND this JPanel or switching to the custom Component
      * won't work. To do that, we search for the JPanel Field on the internal Burp Suite Class that represents the Settings Frame, set the Field as accessible,
