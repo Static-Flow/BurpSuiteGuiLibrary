@@ -20,6 +20,19 @@ public final class BurpGuiControl {
 
     static final Frame SETTINGS_JFRAME = getSettingsFrame();
 
+    public static void replaceComponentAtIndex(int index, Component newComponent) {
+        getMainTabbedPane().setComponentAt(index,newComponent);
+    }
+
+    public static void replaceMainBurpComponent(String oldComponentTabName, Component newComponent) {
+        JTabbedPane mainTabbedPane = getMainTabbedPane();
+        mainTabbedPane.setComponentAt(mainTabbedPane.indexOfTab(oldComponentTabName),newComponent);
+    }
+
+    public static void addMainBurpComponent(String tabName, Component newComponent) {
+        getMainTabbedPane().addTab(tabName,newComponent);
+    }
+
     /**
      * This method returns a Component at a specified walk from a starting Component.
      * For example, take a JFrame named foo, has a JPanel child bar, which itself has two components a JButton baz and a JTextField buz.
@@ -77,7 +90,7 @@ public final class BurpGuiControl {
     }
 
     /**
-     * This method returns the major Swing component of Burp Suite, the JTabbedPane containing the major tabs.
+     * This method returns the main Swing component of Burp Suite, the JTabbedPane containing the major tabs.
      * @return The JTabbedPane which holds all other Burp Suite components
      */
     public static JTabbedPane getMainTabbedPane(){
@@ -111,6 +124,22 @@ public final class BurpGuiControl {
     }
 
     /**
+     * This method searches all children of a source Component for any Components matching the provided Component class
+     * @param parentContainer Starting container to search children
+     * @param clazz The java.awt.Component class which a child Component must match
+     * @return all children of the parentContainer that match the clazz java.awt.Component
+     */
+    public static List<Component> findAllChildComponentsOfType(Container parentContainer, Class<? extends java.awt.Component> clazz) {
+        ArrayList<Component> matchingComponents = new ArrayList<>();
+        for(Component comp : parentContainer.getComponents()) {
+            if(clazz.isAssignableFrom(comp.getClass())){
+                matchingComponents.add(comp);
+            }
+        }
+        return matchingComponents;
+    }
+
+    /**
      * This method recursively searches all children of a source Component for all Components matching the provided Component class
      * @param parentContainer Starting container to recursively search children
      * @param clazz The java.awt.Component class which a child Component must match
@@ -136,11 +165,12 @@ public final class BurpGuiControl {
     public static Component getBaseBurpComponent(String tabName) {
         JTabbedPane mainTabs =  getMainTabbedPane();
         if(mainTabs != null) {
-            return mainTabs.getComponentAt(mainTabs.indexOfTab(tabName));
-        } else {
-            return null;
+            int tabIndex = mainTabs.indexOfTab(tabName);
+            if(tabIndex != -1) {
+                return mainTabs.getComponentAt(mainTabs.indexOfTab(tabName));
+            }
         }
-
+        return null;
     }
 
     /**
